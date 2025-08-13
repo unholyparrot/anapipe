@@ -1,0 +1,165 @@
+include { SAMTOOLS_FAIDX } from '../modules/nf-core/samtools/faidx/main'
+include { MINIMAP2_ALIGN as MINIMAP2_ALIGN_CLEAN} from '../modules/nf-core/minimap2/align/main'
+include { BEDTOOLS_GENOMECOV } from '../modules/nf-core/bedtools/genomecov/main'
+include { SUBSET_COVERAGE as SUBSET_COVERAGE_AMAP } from '../modules/local/awk/subset_coverage'
+include { CLAIR3 } from '../modules/nf-core/clair3/main'
+include { BCFTOOLS_ANNOTATE as BCFTOOLS_ANNOTATE_PRE} from '../modules/nf-core/bcftools/annotate/main'
+include { SNPEFF_SNPEFF } from '../modules/nf-core/snpeff/snpeff/main'
+include { SNPEFF_DOWNLOAD } from '../modules/nf-core/snpeff/download/main'
+include { BCFTOOLS_ANNOTATE as BCFTOOLS_ANNOTATE_POST} from '../modules/nf-core/bcftools/annotate/main'
+include { BCFTOOLS_VIEW } from '../modules/nf-core/bcftools/view/main'
+include { BCFTOOLS_VIEW as BCFTOOLS_VIEW_COVERED } from '../modules/nf-core/bcftools/view/main'
+include { BCFTOOLS_INDEX } from '../modules/nf-core/bcftools/index/main'
+include { BCFTOOLS_CONSENSUS } from '../modules/nf-core/bcftools/consensus/main'
+include { SEQKIT_SUBSEQ } from '../modules/local/seqkit/subseq'
+include { SEQKIT_REPLACE } from '../modules/nf-core/seqkit/replace/main'
+
+
+workflow MAP_AND_MUTATIONS {
+    take:
+        input_reads
+    main:
+
+        ch_reference = Channel.fromPath(params.reference_fasta).map {
+            it -> 
+                def ref_meta = [:]
+                ref_meta.id = "reference"
+                return [ref_meta, it]
+        }
+
+        SAMTOOLS_FAIDX(ch_reference, [[:], []], false)
+
+        ch_fai = SAMTOOLS_FAIDX.out.fai
+
+        MINIMAP2_ALIGN_CLEAN(input_reads, ch_reference.collect(), true, "bai", false, false)
+
+        ch_bam = MINIMAP2_ALIGN_CLEAN.out.bam
+        ch_bai = MINIMAP2_ALIGN_CLEAN.out.index
+
+        ch_mapping = ch_bam.combine(
+            ch_bai, by: 0
+        ).map {
+            it -> [it[0], it[1], it[2], [], params.user_model, params.platform]
+        }
+
+        BEDTOOLS_GENOMECOV(
+            ch_bam.map {
+                it -> [it[0], it[1], 1]
+            },
+            [],
+            "bed",
+            true
+        )
+
+        SUBSET_COVERAGE_AMAP (
+            BEDTOOLS_GENOMECOV.out.genomecov
+        )
+
+        CLAIR3(ch_mapping, ch_reference.collect(), ch_fai.collect())
+
+        ch_clair3_vcf = CLAIR3.out.vcf
+
+        ch_reannotation_pre = ch_clair3_vcf.combine (
+            CLAIR3.out.tbi, by: 0
+        ).map {
+            it -> [it[0], it[1], it[2], [], []]
+        }
+
+        ch_renamer_pre = Channel.fromPath(params.path_rename_chr_pre)
+
+        BCFTOOLS_ANNOTATE_PRE(
+            ch_reannotation_pre,
+            [],
+            ch_renamer_pre.collect(),
+        )
+
+        if (params.snpeff_cache) {
+                ch_snpeff_cache = Channel.fromPath(params.snpeff_cache).map {
+                    it -> 
+                        def cache_meta = [:]
+                        cache_meta.id = "cache"
+                        return [cache_meta, it]
+        } 
+        } else {
+            SNPEFF_DOWNLOAD(
+                Channel.value(params.snpeff_db_name).map{
+                    it -> 
+                        def cache_meta = [:]
+                        cache_meta.id = "cache"
+                        return [cache_meta, it]
+                }
+            )
+            ch_snpeff_cache = SNPEFF_DOWNLOAD.out.cache
+        }
+
+        SNPEFF_SNPEFF(
+            BCFTOOLS_ANNOTATE_PRE.out.vcf,
+            params.snpeff_db_name,
+            ch_snpeff_cache.collect()
+        )
+
+        BCFTOOLS_VIEW(
+            SNPEFF_SNPEFF.out.vcf.map{
+                it -> [it[0], it[1], []]
+            },
+            [], [], []
+        )
+
+        ch_renamer_post = Channel.fromPath(params.path_rename_chr_post)
+
+        BCFTOOLS_ANNOTATE_POST (
+            BCFTOOLS_VIEW.out.vcf.map{
+                it -> [it[0], it[1], [], [], []]
+            },
+            [],
+            ch_renamer_post.collect()
+        )
+
+        ch_mutations_for_coverage = BCFTOOLS_ANNOTATE_POST.out.vcf.combine (
+            SUBSET_COVERAGE_AMAP.out.highcov, by: 0
+        )
+
+
+        BCFTOOLS_VIEW_COVERED(
+            ch_mutations_for_coverage.map {
+                it -> [it[0], it[1], []]
+            },
+            [],
+            ch_mutations_for_coverage.map {
+                it -> [it[2]]
+            }, 
+            []
+        )
+
+        BCFTOOLS_INDEX (
+            BCFTOOLS_VIEW_COVERED.out.vcf
+        )
+        
+        ch_pre_consensus = BCFTOOLS_VIEW_COVERED.out.vcf.combine (
+            BCFTOOLS_INDEX.out.csi, by: 0
+        ).combine (
+            ch_reference.map { it -> it[1] }
+        ).combine (
+            SUBSET_COVERAGE_AMAP.out.lowcov, by: 0
+        )
+
+        BCFTOOLS_CONSENSUS(
+            ch_pre_consensus
+        )
+
+        // BCFTOOLS_CONSENSUS.out.fasta.view()
+
+        SEQKIT_SUBSEQ (
+            BCFTOOLS_CONSENSUS.out.fasta,
+            params.regions_of_interest
+        )
+
+        SEQKIT_REPLACE (
+            SEQKIT_SUBSEQ.out.fastx
+        )
+
+        out_fasta = SEQKIT_REPLACE.out.fastx
+
+    emit:
+        out_fasta
+}
