@@ -37,3 +37,4 @@ TBD...
 
 For the `CLAIR3` nf-core module the container was changed from `biocontainers/clair3:1.0.10--py39hd649744_1` to `biocontainers/clair3:1.0.11--py39hd649744_0` 
 to enable `--enable_variant_calling_at_sequence_head_and_tail` handling.
+medaka:1.4.4--py38h130def0_0 medaka:2.1.0--py38ha0c3a46_0

@@ -19,6 +19,7 @@ process BCFTOOLS_CONSENSUS {
 
     script:
     def args = task.ext.args ?: ''
+    def args2 = task.ext.args2 ?: ''
     def prefix = task.ext.prefix ?: "${meta.id}"
     def masking = mask ? "-m $mask" : ""
     """
@@ -28,6 +29,7 @@ process BCFTOOLS_CONSENSUS {
             $vcf \\
             $args \\
             $masking \\
+            $args2 \\
             > ${prefix}.fa
 
     cat <<-END_VERSIONS > versions.yml

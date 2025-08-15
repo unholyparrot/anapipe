@@ -11,6 +11,7 @@ include { MULTIQC } from './modules/nf-core/multiqc/main'
 workflow {
     ch_multiqc_files = Channel.empty()
 
+    // read input worklist and directory, concatenate reads
     INPUT()
 
     QC_CONTROLS_PRE(INPUT.out.ch_input_reads, "pre")

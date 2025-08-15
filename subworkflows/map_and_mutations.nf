@@ -1,5 +1,8 @@
 include { SAMTOOLS_FAIDX } from '../modules/nf-core/samtools/faidx/main'
 include { MINIMAP2_ALIGN as MINIMAP2_ALIGN_CLEAN} from '../modules/nf-core/minimap2/align/main'
+include { SAMTOOLS_VIEW as SAMTOOLS_VIEW_SPLIT_ALIGNMENTS } from '../modules/local/samtools/view/main'
+include { MEDAKA as MEDAKA_1} from '../modules/local/medaka/main'
+include { MEDAKA as MEDAKA_2} from '../modules/local/medaka/main'
 include { BEDTOOLS_GENOMECOV } from '../modules/nf-core/bedtools/genomecov/main'
 include { SUBSET_COVERAGE as SUBSET_COVERAGE_AMAP } from '../modules/local/awk/subset_coverage'
 include { CLAIR3 } from '../modules/nf-core/clair3/main'
@@ -20,6 +23,7 @@ workflow MAP_AND_MUTATIONS {
         input_reads
     main:
 
+        // индексируем референсную последовательность
         ch_reference = Channel.fromPath(params.reference_fasta).map {
             it -> 
                 def ref_meta = [:]
@@ -31,11 +35,61 @@ workflow MAP_AND_MUTATIONS {
 
         ch_fai = SAMTOOLS_FAIDX.out.fai
 
+        // картирование прочтений на референсную последовательность
         MINIMAP2_ALIGN_CLEAN(input_reads, ch_reference.collect(), true, "bai", false, false)
 
         ch_bam = MINIMAP2_ALIGN_CLEAN.out.bam
         ch_bai = MINIMAP2_ALIGN_CLEAN.out.index
 
+        // // разделяю картирования на регионы для коллинга и прочие регионы
+        // SAMTOOLS_VIEW_SPLIT_ALIGNMENTS (
+        //     ch_bam.combine(
+        //         ch_bai, by: 0
+        //     ).map {it -> [it[0], it[1], it[2]]},
+        //     [[:], []],
+        //     Channel.fromPath(params.amplicones_bed).collect(),
+        //     "bai"
+        // )
+
+        // ch_mapped_for_P1 = SAMTOOLS_VIEW_SPLIT_ALIGNMENTS.out.unselected //
+        // ch_mapped_for_calling = SAMTOOLS_VIEW_SPLIT_ALIGNMENTS.out.bam //
+        // ch_mapped_for_calling_index = SAMTOOLS_VIEW_SPLIT_ALIGNMENTS.out.bai //
+
+        // SEQKIT_SUBSEQ_MGPA (
+        //     ch_reference.collect(),
+        //     params.mgpA_bed
+        // )
+
+        // SEQKIT_REPLACE_MGPA (
+        //     ch_mapped_for_P1.combine (
+        //         SEQKIT_SUBSEQ_MGPA.out.fastx.map {it -> it[1]}
+        //     ).map{
+        //         it -> [it[0], it[2]]
+        //     }
+        // )
+
+        // SAMTOOLS_FASTQ (
+        //     ch_mapped_for_P1,
+        //     false
+        // )
+
+        // ch_for_medaka = SAMTOOLS_FASTQ.out.other.combine(
+        //         SEQKIT_REPLACE_MGPA.out.fastx, by: 0
+        // )
+
+        // ch_for_medaka.view()
+
+        // MEDAKA_1 (
+        //     ch_for_medaka
+        // )
+
+        // MEDAKA_2 (
+        //     SAMTOOLS_FASTQ.out.other.combine (
+        //         MEDAKA_1.out.assembly, by: 0
+        //     )
+        // )
+
+        // объединяем картирование
         ch_mapping = ch_bam.combine(
             ch_bai, by: 0
         ).map {
@@ -115,27 +169,27 @@ workflow MAP_AND_MUTATIONS {
             ch_renamer_post.collect()
         )
 
-        ch_mutations_for_coverage = BCFTOOLS_ANNOTATE_POST.out.vcf.combine (
-            SUBSET_COVERAGE_AMAP.out.highcov, by: 0
-        )
+        // ch_mutations_for_coverage = BCFTOOLS_ANNOTATE_POST.out.vcf.combine (
+        //     SUBSET_COVERAGE_AMAP.out.highcov, by: 0
+        // )
 
 
-        BCFTOOLS_VIEW_COVERED(
-            ch_mutations_for_coverage.map {
-                it -> [it[0], it[1], []]
-            },
-            [],
-            ch_mutations_for_coverage.map {
-                it -> [it[2]]
-            }, 
-            []
-        )
+        // BCFTOOLS_VIEW_COVERED(
+        //     ch_mutations_for_coverage.map {
+        //         it -> [it[0], it[1], []]
+        //     },
+        //     [],
+        //     ch_mutations_for_coverage.map {
+        //         it -> [it[2]]
+        //     }, 
+        //     []
+        // )
 
         BCFTOOLS_INDEX (
-            BCFTOOLS_VIEW_COVERED.out.vcf
+            BCFTOOLS_ANNOTATE_POST.out.vcf
         )
         
-        ch_pre_consensus = BCFTOOLS_VIEW_COVERED.out.vcf.combine (
+        ch_pre_consensus = BCFTOOLS_ANNOTATE_POST.out.vcf.combine (
             BCFTOOLS_INDEX.out.csi, by: 0
         ).combine (
             ch_reference.map { it -> it[1] }
@@ -158,7 +212,19 @@ workflow MAP_AND_MUTATIONS {
             SEQKIT_SUBSEQ.out.fastx
         )
 
-        out_fasta = SEQKIT_REPLACE.out.fastx
+        MEDAKA_1 (
+            input_reads.combine(
+                SEQKIT_REPLACE.out.fastx, by: 0
+            )
+        )
+
+        MEDAKA_2 (
+            input_reads.combine(
+                MEDAKA_1.out.assembly, by: 0
+            )
+        )
+
+        out_fasta = MEDAKA_2.out.assembly
 
     emit:
         out_fasta
